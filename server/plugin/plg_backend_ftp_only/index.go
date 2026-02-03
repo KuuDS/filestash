@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/textproto"
 	"os"
 	"regexp"
 	"strings"
@@ -184,8 +185,10 @@ func (f Ftp) Rm(path string) error {
 			return nil
 		}
 		// Check for successful FTP codes (2xx)
-		if strings.Contains(e.Error(), "200") || strings.Contains(e.Error(), "250") {
-			return nil
+		if protoErr, ok := e.(*textproto.Error); ok {
+			if protoErr.Code >= 200 && protoErr.Code < 300 {
+				return nil
+			}
 		}
 		return e
 	}

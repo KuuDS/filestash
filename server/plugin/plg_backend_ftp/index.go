@@ -8,6 +8,7 @@ import (
 	"github.com/jlaffaye/ftp"
 	"io"
 	"io/fs"
+	"net/textproto"
 	"os"
 	"regexp"
 	"strings"
@@ -332,7 +333,7 @@ func (f Ftp) Stat(path string) (finfo os.FileInfo, err error) {
 		return finfo, err
 	}
 	// Check if it's a not found error (550 code)
-	if strings.Contains(err.Error(), "550") {
+	if protoErr, ok := err.(*textproto.Error); ok && protoErr.Code == 550 {
 		return nil, ErrNotFound
 	}
 	return nil, ErrNotImplemented
@@ -357,8 +358,10 @@ func (f Ftp) Rm(path string) (err error) {
 			return nil
 		}
 		// Check for successful FTP codes (2xx)
-		if strings.Contains(e.Error(), "200") || strings.Contains(e.Error(), "250") {
-			return nil
+		if protoErr, ok := e.(*textproto.Error); ok {
+			if protoErr.Code >= 200 && protoErr.Code < 300 {
+				return nil
+			}
 		}
 		return e
 	}
@@ -426,14 +429,25 @@ func (f Ftp) Close() error {
 func (f Ftp) Execute(fn func(*ftp.ServerConn) error) {
 	err := fn(f.client)
 	// Check for connection errors that require reconnection
-	if err != nil && (strings.Contains(err.Error(), "421") || 
-		strings.Contains(err.Error(), "EOF") ||
-		strings.Contains(err.Error(), "connection") ||
-		strings.Contains(err.Error(), "closed")) {
-		f.Close()
-		FtpCache.Set(f.p, nil)
-		if b, err := f.Init(f.p, &App{Context: f.ctx}); err == nil {
-			fn(b.(*Ftp).client)
+	if err != nil {
+		reconnect := false
+		// Check for FTP 421 error (service not available, closing control connection)
+		if protoErr, ok := err.(*textproto.Error); ok && protoErr.Code == 421 {
+			reconnect = true
+		}
+		// Check for I/O errors
+		if !reconnect && (strings.Contains(err.Error(), "EOF") || 
+			strings.Contains(err.Error(), "broken pipe") ||
+			strings.Contains(err.Error(), "connection reset")) {
+			reconnect = true
+		}
+		
+		if reconnect {
+			f.Close()
+			FtpCache.Set(f.p, nil)
+			if b, err := f.Init(f.p, &App{Context: f.ctx}); err == nil {
+				fn(b.(*Ftp).client)
+			}
 		}
 	}
 }
