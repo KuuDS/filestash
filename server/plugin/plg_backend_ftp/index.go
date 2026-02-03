@@ -441,7 +441,7 @@ func (f Ftp) Execute(fn func(*ftp.ServerConn) error) {
 			strings.Contains(err.Error(), "connection reset")) {
 			reconnect = true
 		}
-		
+
 		if reconnect {
 			f.Close()
 			FtpCache.Set(f.p, nil)
