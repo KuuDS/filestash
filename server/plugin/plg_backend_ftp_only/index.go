@@ -210,11 +210,11 @@ func (f Ftp) Rm(path string) error {
 				}
 			}
 		}
-		err := f.client.RemoveDir(path)
-		return transformError(err)
+		rmErr := f.client.RemoveDir(path)
+		return transformError(rmErr)
 	}
-	err := f.client.Delete(path)
-	return transformError(err)
+	delErr := f.client.Delete(path)
+	return transformError(delErr)
 }
 
 func (f Ftp) Mv(from string, to string) error {

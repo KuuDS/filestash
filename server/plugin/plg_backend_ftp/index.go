@@ -388,8 +388,8 @@ func (f Ftp) Rm(path string) (err error) {
 			err = client.RemoveDir(_path)
 			return transformError(err)
 		}
-		err := client.Delete(_path)
-		return transformError(err)
+		delErr := client.Delete(_path)
+		return transformError(delErr)
 	}
 	f.Execute(func(client *ftp.ServerConn) error {
 		err = recursiveDelete(client, path)
