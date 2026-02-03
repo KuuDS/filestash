@@ -3,22 +3,38 @@ package plg_backend_ftp_only
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	. "github.com/mickael-kerjean/filestash/server/common"
 
-	//"github.com/secsy/goftp" <- FTP issue with microsoft FTP
-	"github.com/prasad83/goftp"
+	"github.com/jlaffaye/ftp"
 )
 
 var FtpCache AppCache
 
+// ftpFileInfo is an adapter to make ftp.Entry compatible with os.FileInfo interface
+type ftpFileInfo struct {
+	entry *ftp.Entry
+}
+
+func (f *ftpFileInfo) Name() string       { return f.entry.Name }
+func (f *ftpFileInfo) Size() int64        { return int64(f.entry.Size) }
+func (f *ftpFileInfo) Mode() fs.FileMode {
+	if f.IsDir() {
+		return fs.ModeDir | 0755
+	}
+	return 0644
+}
+func (f *ftpFileInfo) ModTime() time.Time { return f.entry.Time }
+func (f *ftpFileInfo) IsDir() bool        { return f.entry.Type == ftp.EntryTypeFolder }
+func (f *ftpFileInfo) Sys() interface{}   { return f.entry }
+
 type Ftp struct {
-	client *goftp.Client
+	client *ftp.ServerConn
 }
 
 func init() {
@@ -49,28 +65,20 @@ func (f Ftp) Init(params map[string]string, app *App) (IBackend, error) {
 	if params["username"] == "anonymous" && params["password"] == "" {
 		params["password"] = "anonymous"
 	}
-	conn := 5
-	if params["conn"] != "" {
-		if i, err := strconv.Atoi(params["conn"]); err == nil && i > 0 {
-			conn = i
-		}
-	}
-
-	configWithoutTLS := goftp.Config{
-		User:               params["username"],
-		Password:           params["password"],
-		ConnectionsPerHost: conn,
-		Timeout:            10 * time.Second,
-	}
 
 	var backend *Ftp = nil
+	hostname := fmt.Sprintf("%s:%s", strings.TrimPrefix(params["hostname"], "ftp://"), params["port"])
 
-	client, err := goftp.DialConfig(configWithoutTLS, fmt.Sprintf("%s:%s", strings.TrimPrefix(params["hostname"], "ftp://"), params["port"]))
+	client, err := ftp.Dial(hostname, ftp.DialWithTimeout(10*time.Second))
 	if err != nil {
 		return backend, err
 	}
-	if _, err := client.ReadDir("/"); err != nil {
-		client.Close()
+	if err := client.Login(params["username"], params["password"]); err != nil {
+		client.Quit()
+		return backend, ErrAuthenticationFailed
+	}
+	if _, err := client.List("/"); err != nil {
+		client.Quit()
 		return backend, ErrAuthenticationFailed
 	}
 	backend = &Ftp{client}
@@ -142,28 +150,27 @@ func (f Ftp) LoginForm() Form {
 }
 
 func (f Ftp) Home() (string, error) {
-	return f.client.Getwd()
+	return f.client.CurrentDir()
 }
 
 func (f Ftp) Ls(path string) ([]os.FileInfo, error) {
-	return f.client.ReadDir(path)
+	entries, err := f.client.List(path)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]os.FileInfo, len(entries))
+	for i, entry := range entries {
+		files[i] = &ftpFileInfo{entry: entry}
+	}
+	return files, nil
 }
 
 func (f Ftp) Cat(path string) (io.ReadCloser, error) {
-	pr, pw := io.Pipe()
-	go func() {
-		// TODO: prevent closing
-		if err := f.client.Retrieve(path, pw); err != nil {
-			pr.CloseWithError(NewError("Problem", 409))
-		}
-		pw.Close()
-	}()
-	return pr, nil
+	return f.client.Retr(path)
 }
 
 func (f Ftp) Mkdir(path string) error {
-	_, err := f.client.Mkdir(path)
-	return err
+	return f.client.MakeDir(path)
 }
 
 func (f Ftp) Rm(path string) error {
@@ -176,10 +183,9 @@ func (f Ftp) Rm(path string) error {
 		if e == nil {
 			return nil
 		}
-		if obj, ok := e.(goftp.Error); ok {
-			if obj.Code() < 300 && obj.Code() > 0 {
-				return nil
-			}
+		// Check for successful FTP codes (2xx)
+		if strings.Contains(e.Error(), "200") || strings.Contains(e.Error(), "250") {
+			return nil
 		}
 		return e
 	}
@@ -201,7 +207,7 @@ func (f Ftp) Rm(path string) error {
 				}
 			}
 		}
-		err = f.client.Rmdir(path)
+		err := f.client.RemoveDir(path)
 		return transformError(err)
 	}
 	err := f.client.Delete(path)
@@ -213,14 +219,13 @@ func (f Ftp) Mv(from string, to string) error {
 }
 
 func (f Ftp) Touch(path string) error {
-	return f.client.Store(path, strings.NewReader(""))
+	return f.client.Stor(path, strings.NewReader(""))
 }
 
 func (f Ftp) Save(path string, file io.Reader) error {
-	// TODO: prevent closing
-	return f.client.Store(path, file)
+	return f.client.Stor(path, file)
 }
 
 func (f Ftp) Close() error {
-	return f.client.Close()
+	return f.client.Quit()
 }
